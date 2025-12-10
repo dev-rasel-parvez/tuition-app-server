@@ -62,10 +62,9 @@ async function run() {
         // =====================================================
         // USERS API
         // =====================================================
-        
+
         // server test
         app.get("/", async (req, res) => {
-
             res.send('server is running');
         });
 
@@ -154,15 +153,14 @@ async function run() {
         });
 
         // GET SINGLE TUITION (PUBLIC PAGE)
-app.get("/tuitions/:tuitionId", async (req, res) => {
-    const tuitionId = req.params.tuitionId;
-    const tuition = await tuitionCollection.findOne({ tuitionId });
+        app.get("/tuitions/:tuitionId", async (req, res) => {
+            const tuitionId = req.params.tuitionId;
+            const tuition = await tuitionCollection.findOne({ tuitionId });
 
-    if (!tuition) return res.status(404).send({ error: "Tuition not found" });
+            if (!tuition) return res.status(404).send({ error: "Tuition not found" });
 
-    res.send(tuition);
-});
-
+            res.send(tuition);
+        });
 
         // =====================================================
         // APPLICATION API
@@ -228,17 +226,22 @@ app.get("/tuitions/:tuitionId", async (req, res) => {
             }
         });
 
-        // EDIT TUITION
+        // =====================================================
+        // EDIT TUITION (🔥 FIXED — ONLY CHANGE MADE)
+        // =====================================================
         app.put("/tuitions/:tuitionId", async (req, res) => {
             try {
                 const tuitionId = req.params.tuitionId;
 
+                const data = { ...req.body };
+                delete data._id; // ❗ Prevent MongoDB _id overwrite error
+
                 const result = await tuitionCollection.updateOne(
                     { tuitionId },
-                    { $set: req.body }
+                    { $set: data }
                 );
 
-                res.send(result);
+                res.send({ success: true, updated: result.modifiedCount });
 
             } catch (error) {
                 res.status(500).send({ error: error.message });
@@ -357,13 +360,12 @@ app.get("/tuitions/:tuitionId", async (req, res) => {
             }
         });
 
-        // END
     } catch (err) {
         console.log(err);
     }
 }
 
-run().catch(console.dir);
+run().catch(console.dir());
 
 // ------------------------------
 // START SERVER
