@@ -62,6 +62,12 @@ async function run() {
         // =====================================================
         // USERS API
         // =====================================================
+        
+        // server test
+        app.get("/", async (req, res) => {
+
+            res.send('server is running');
+        });
 
         // CREATE USER
         app.post("/users", async (req, res) => {
@@ -148,22 +154,15 @@ async function run() {
         });
 
         // GET SINGLE TUITION (PUBLIC PAGE)
-        app.get("/tuitions/:tuitionId", async (req, res) => {
-            try {
-                const tuitionId = req.params.tuitionId;
+app.get("/tuitions/:tuitionId", async (req, res) => {
+    const tuitionId = req.params.tuitionId;
+    const tuition = await tuitionCollection.findOne({ tuitionId });
 
-                const tuition = await tuitionCollection.findOne({ tuitionId });
+    if (!tuition) return res.status(404).send({ error: "Tuition not found" });
 
-                if (!tuition) {
-                    return res.status(404).send({ error: "Tuition not found" });
-                }
+    res.send(tuition);
+});
 
-                res.send(tuition);
-
-            } catch (error) {
-                res.status(500).send({ error: error.message });
-            }
-        });
 
         // =====================================================
         // APPLICATION API
