@@ -138,22 +138,37 @@ async function run() {
                 if (req.query.location) filters.location = regexField("location");
                 if (req.query.schedule) filters.schedule = regexField("schedule");
 
+                const skip = (page - 1) * limit;
+
+                const total = await tuitionCollection.countDocuments(filters);
+
                 const tuitions = await tuitionCollection
                     .find(filters)
                     .sort({ createdAt: -1 })
-                    .skip((page - 1) * limit)
+                    .skip(skip)
                     .limit(limit)
                     .toArray();
 
-                res.send(tuitions);
+                res.send({ total, tuitions });
 
             } catch (error) {
                 res.status(500).send({ error: error.message });
             }
         });
 
+
         // GET SINGLE TUITION (PUBLIC PAGE)
         app.get("/tuitions/:tuitionId", async (req, res) => {
+            const tuitionId = req.params.tuitionId;
+            const tuition = await tuitionCollection.findOne({ tuitionId });
+
+            if (!tuition) return res.status(404).send({ error: "Tuition not found" });
+
+            res.send(tuition);
+        });
+
+
+        app.get("tutor/tuitions/:tuitionId", async (req, res) => {
             const tuitionId = req.params.tuitionId;
             const tuition = await tuitionCollection.findOne({ tuitionId });
 
@@ -359,6 +374,84 @@ async function run() {
                 res.status(500).send({ error: error.message });
             }
         });
+
+
+        // GET ALL TUTORS WITH FILTERS + SORT BY LATEST
+        // GET ALL TUTORS WITH FILTERS + PAGINATION
+        app.get("/tutors", async (req, res) => {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 12;
+
+            const filters = { role: "tutor" };
+            const allowedFilters = ["university", "department", "experience", "runningYear", "ssc", "hsc"];
+
+            allowedFilters.forEach(field => {
+                if (req.query[field] && req.query[field] !== "") {
+                    filters[field] = { $regex: req.query[field], $options: "i" };
+                }
+            });
+
+            const skip = (page - 1) * limit;
+
+            const totalTutors = await userCollection.countDocuments(filters);
+            const tutors = await userCollection
+                .find(filters)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            res.send({
+                total: totalTutors,
+                tutors
+            });
+        });
+
+
+
+        // GET SINGLE TUTOR BY ID
+        app.get("/tutors/details/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+
+                const tutor = await userCollection.findOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        projection: {
+                            name: 1,
+                            photoURL: 1,
+                            university: 1,
+                            department: 1,
+                            ssc: 1,
+                            hsc: 1,
+                            runningYear: 1,
+                            experience: 1,
+                            phone: 1,
+                            email: 1,
+                            contactPhone: 1,
+                            contactEmail: 1,
+                            createdAt: 1,
+                            role: 1,
+                        }
+                    }
+                );
+
+                if (!tutor) return res.status(404).send({ error: "Tutor not found" });
+
+                // MASK sensitive fields by default
+                tutor.phone = "01**********";
+                tutor.email = "pr********@gmail.com";
+                tutor.contactPhone = "01**********";
+                tutor.contactEmail = "pr********@gmail.com";
+
+                res.send({ tutor });
+
+            } catch (error) {
+                res.status(500).send({ error: error.message });
+            }
+        });
+
+
 
     } catch (err) {
         console.log(err);
