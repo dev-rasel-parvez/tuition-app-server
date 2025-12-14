@@ -22,6 +22,28 @@ admin.initializeApp({
 app.use(cors());
 app.use(express.json());
 
+const verifyFirebaseToken = async (req, res, next) => {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+        return res.status(401).send({ message: "Unauthorized" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    try {
+        const decodedUser = await admin.auth().verifyIdToken(token);
+        req.decoded = decodedUser;
+        next();
+    } catch (error) {
+        return res.status(401).send({ message: "Invalid token" });
+    }
+};
+
+
+//SUPER_ADMIN_EMAIL
+const SUPER_ADMIN_EMAIL = "projects@resultdrivenads.com";
+
 // ------------------------------
 // MONGODB CONNECTION
 // ------------------------------
@@ -63,37 +85,92 @@ async function run() {
         // USERS API
         // =====================================================
 
-        // server test
-        app.get("/", async (req, res) => {
-            res.send('server is running');
+        /* ==========================
+               BASIC TEST
+            =========================== */
+        app.get("/", (req, res) => {
+            res.send("Server running");
         });
 
-        // CREATE USER
-        app.post("/users", async (req, res) => {
+        /* ==========================
+           USERS
+        =========================== */
+        app.post("/users", verifyFirebaseToken, async (req, res) => {
             const user = req.body;
+
+            // 🔐 prevent email spoofing
+            if (req.decoded.email !== user.email) {
+                return res.status(403).send({ message: "Forbidden access" });
+            }
+
             const exists = await userCollection.findOne({ email: user.email });
+            if (exists) {
+                return res.send({ message: "User already exists" });
+            }
 
-            if (exists) return res.send({ message: "User already exists" });
+            if (user.email === SUPER_ADMIN_EMAIL) {
+                user.role = "admin";
+                user.status = "approved";
+            } else if (user.role === "admin") {
+                user.status = "pending";
+            } else {
+                user.status = "approved";
+            }
 
-            const result = await userCollection.insertOne(user);
-            res.send(result);
+            user.createdAt = new Date();
+
+            await userCollection.insertOne(user);
+            res.send({ success: true });
         });
 
-        // GET USER ROLE
+
+
         app.get("/users/:email/role", async (req, res) => {
-            try {
-                const email = req.params.email;
-                const user = await userCollection.findOne(
-                    { email },
-                    { projection: { role: 1 } }
-                );
+            const user = await userCollection.findOne(
+                { email: req.params.email },
+                { projection: { role: 1, status: 1 } }
+            );
 
-                if (!user) return res.status(404).send({ role: null });
-
-                res.send({ role: user.role });
-            } catch {
-                res.status(500).send({ message: "Server error" });
+            if (!user) {
+                return res.send({ role: null, status: null });
             }
+
+            res.send({
+                role: user.role,
+                status: user.status,
+            });
+        });
+
+        /* ==========================
+           ADMIN – USER MANAGEMENT
+        =========================== */
+        app.get("/admin/users", async (req, res) => {
+            const users = await userCollection
+                .find()
+                .sort({ createdAt: -1 })
+                .toArray();
+            res.send(users);
+        });
+
+        app.patch("/admin/approve/:id", async (req, res) => {
+            await userCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: { status: "approved" } }
+            );
+            res.send({ approved: true });
+        });
+
+        app.patch("/admin/user/:id", async (req, res) => {
+            await userCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: req.body }
+            );
+            res.send({ updated: true });
+        });
+
+        app.delete("/admin/user/:id", async (req, res) => {
+            await userCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+            res.send({ deleted: true });
         });
 
         // =====================================================
