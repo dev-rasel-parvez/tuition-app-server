@@ -23,7 +23,7 @@ app.use(cors());
 app.use(express.json());
 
 const verifyFirebaseToken = async (req, res, next) => {
-    const authHeader = req.headers.authorization;
+    const authHeader = req.headersauthorization || req.headers.authorization;
     if (!authHeader) {
         return res.status(401).send({ message: "Unauthorized" });
     }
@@ -119,12 +119,11 @@ async function run() {
             );
 
             if (!user) return res.send({ role: null, status: null });
-
             res.send({ role: user.role, status: user.status });
         });
 
         // =====================================================
-        // ✅ ADMIN – USER MANAGEMENT (PAGINATED)
+        // ADMIN – USER MANAGEMENT (PAGINATED)
         // =====================================================
         app.get("/admin/users", verifyFirebaseToken, async (req, res) => {
             const page = parseInt(req.query.page) || 1;
@@ -135,17 +134,12 @@ async function run() {
 
             const users = await userCollection
                 .find()
-                .sort({ createdAt: -1 }) // latest first
+                .sort({ createdAt: -1 })
                 .skip(skip)
                 .limit(limit)
                 .toArray();
 
-            res.send({
-                total,
-                page,
-                limit,
-                users
-            });
+            res.send({ total, page, limit, users });
         });
 
         app.patch("/admin/approve/:id", async (req, res) => {
@@ -169,14 +163,28 @@ async function run() {
             res.send({ deleted: true });
         });
 
+        app.get("/admin/tuitions/:id", verifyFirebaseToken, async (req, res) => {
+            const tuition = await tuitionCollection.findOne({ _id: new ObjectId(req.params.id) });
+
+            const applications = await applicationCollection
+                .find({ tuitionId: tuition._id })
+                .toArray();
+
+            res.send({ tuition, applications });
+        });
+
+
         // =====================================================
-        // TUITIONS (UNCHANGED)
+        // TUITIONS (ONLY SMALL ADDITION)
         // =====================================================
         app.post("/tuitions", async (req, res) => {
             const data = req.body;
             data.createdAt = new Date();
+            data.status = "pending"; // ✅ NEW (IMPORTANT)
+
             const tuitionId = await getNextTuitionId(db);
             data.tuitionId = tuitionId;
+
             const result = await tuitionCollection.insertOne(data);
             res.send({ insertedId: result.insertedId, tuitionId });
         });
@@ -196,6 +204,9 @@ async function run() {
             if (req.query.location) filters.location = regexField("location");
             if (req.query.schedule) filters.schedule = regexField("schedule");
 
+            // ❗ Tutors only see approved tuitions
+            filters.status = "approved";
+
             const total = await tuitionCollection.countDocuments(filters);
 
             const tuitions = await tuitionCollection
@@ -208,11 +219,85 @@ async function run() {
             res.send({ total, tuitions });
         });
 
+
+        // PUBLIC – APPROVED TUTORS LIST (PAGINATED + FILTER)
+        // =====================================================
+        app.get("/tutors", async (req, res) => {
+            const limit = parseInt(req.query.limit) || 12;
+            const page = parseInt(req.query.page) || 1;
+            const skip = (page - 1) * limit;
+
+            let filters = {
+                role: "tutor",
+                status: "approved"
+            };
+
+            const regexField = field => ({
+                $regex: req.query[field],
+                $options: "i"
+            });
+
+            if (req.query.university) filters.university = regexField("university");
+            if (req.query.department) filters.department = regexField("department");
+            if (req.query.experience) filters.experience = regexField("experience");
+            if (req.query.runningYear) filters.runningYear = regexField("runningYear");
+            if (req.query.ssc) filters.ssc = regexField("ssc");
+            if (req.query.hsc) filters.hsc = regexField("hsc");
+
+            const total = await userCollection.countDocuments(filters);
+
+            const tutors = await userCollection
+                .find(filters)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            res.send({ total, tutors });
+        });
+
+
+
+        // =====================================================
+        // ADMIN – TUITION MANAGEMENT (NEW)
+        // =====================================================
+        app.get("/admin/tuitions", verifyFirebaseToken, async (req, res) => {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 15;
+            const skip = (page - 1) * limit;
+
+            const total = await tuitionCollection.countDocuments();
+
+            const tuitions = await tuitionCollection
+                .find()
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            res.send({ total, page, limit, tuitions });
+        });
+
+        app.patch("/admin/tuitions/:id/status", verifyFirebaseToken, async (req, res) => {
+            const { status, rejectReason } = req.body;
+
+            await tuitionCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                {
+                    $set: {
+                        status,
+                        rejectReason: rejectReason || null
+                    }
+                }
+            );
+
+            res.send({ updated: true });
+        });
+
         // =====================================================
         // ALL OTHER ROUTES (UNCHANGED)
         // =====================================================
         // Applications, Payments, Tutors, Details APIs
-        // (No changes made)
 
     } catch (err) {
         console.log(err);
