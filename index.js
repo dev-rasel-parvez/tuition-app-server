@@ -177,10 +177,14 @@ async function run() {
         // =====================================================
         // TUITIONS (ONLY SMALL ADDITION)
         // =====================================================
-        app.post("/tuitions", async (req, res) => {
+        app.post("/tuitions", verifyFirebaseToken, async (req, res) => {
             const data = req.body;
+
             data.createdAt = new Date();
-            data.status = "pending"; // ✅ NEW (IMPORTANT)
+            data.status = "pending";
+
+            data.postedByEmail = req.decoded.email;
+            data.postedByRole = "student";
 
             const tuitionId = await getNextTuitionId(db);
             data.tuitionId = tuitionId;
@@ -188,6 +192,7 @@ async function run() {
             const result = await tuitionCollection.insertOne(data);
             res.send({ insertedId: result.insertedId, tuitionId });
         });
+
 
         app.get("/tuitions", async (req, res) => {
             const limit = parseInt(req.query.limit) || 12;
@@ -218,6 +223,169 @@ async function run() {
 
             res.send({ total, tuitions });
         });
+
+        // =======================================
+        // PUBLIC – TUITION DETAILS (by tuitionId)
+        // =======================================
+        app.get("/tuitions/:tuitionId", async (req, res) => {
+            const { tuitionId } = req.params;
+
+            const tuition = await tuitionCollection.findOne({ tuitionId });
+
+            if (!tuition) {
+                return res.status(404).send({ message: "Tuition not found" });
+            }
+
+            res.send(tuition);
+        });
+
+
+        // =====================================================
+        // STUDENT – MY TUITIONS
+        // =====================================================
+        // =====================================================
+        // STUDENT – MY TUITIONS WITH APPLICATIONS
+        // =====================================================
+        app.get("/my-tuitions/:email", verifyFirebaseToken, async (req, res) => {
+            const email = req.params.email;
+
+            if (req.decoded.email !== email) {
+                return res.status(403).send({ message: "Forbidden access" });
+            }
+
+            const tuitions = await tuitionCollection.aggregate([
+                {
+                    $match: {
+                        postedByEmail: email,
+                        postedByRole: "student"
+                    }
+                },
+                { $sort: { createdAt: -1 } },
+                {
+                    $lookup: {
+                        from: "applications",
+                        localField: "tuitionId",
+                        foreignField: "tuitionId",
+                        as: "applications"
+                    }
+                },
+                {
+                    $lookup: {
+                        from: "users",
+                        localField: "applications.tutorId",
+                        foreignField: "_id",
+                        as: "tutors"
+                    }
+                }
+            ]).toArray();
+
+            res.send(tuitions);
+        });
+
+        app.patch("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
+            await tuitionCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: req.body }
+            );
+            res.send({ updated: true });
+        });
+
+
+
+        app.delete("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
+            await tuitionCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+            res.send({ deleted: true });
+        });
+
+
+
+        // STUDENT – TUITION ANALYTICS
+        app.get("/student/tuition-analytics/:id", verifyFirebaseToken, async (req, res) => {
+            const tuitionId = new ObjectId(req.params.id);
+            const { university, department, experience, runningYear } = req.query;
+
+            let tutorFilters = {};
+            if (university) tutorFilters["tutor.university"] = { $regex: university, $options: "i" };
+            if (department) tutorFilters["tutor.department"] = { $regex: department, $options: "i" };
+            if (experience) tutorFilters["tutor.experience"] = { $gte: experience };
+            if (runningYear) tutorFilters["tutor.runningYear"] = runningYear;
+
+            const tutors = await applicationCollection.aggregate([
+                { $match: { tuitionId } },
+                {
+                    $lookup: {
+                        from: "users",
+                        localField: "tutorId",
+                        foreignField: "_id",
+                        as: "tutor"
+                    }
+                },
+                { $unwind: "$tutor" },
+                { $match: tutorFilters },
+                {
+                    $project: {
+                        "tutor.email": 0,
+                        "tutor.contactEmail": 0
+                    }
+                }
+            ]).toArray();
+
+            res.send(tutors.map(t => t.tutor));
+        });
+
+
+        // GET tutors applied to a tuition (with filters)
+        app.get("/student/tuition/:id/applicants",
+            verifyFirebaseToken,
+            async (req, res) => {
+                try {
+                    const tuitionObjectId = new ObjectId(req.params.id);
+
+                    let tutorFilters = {
+                        "tutor.role": "tutor",
+                        "tutor.status": "approved"
+                    };
+
+                    const regex = v => ({ $regex: v, $options: "i" });
+
+                    if (req.query.university) tutorFilters["tutor.university"] = regex(req.query.university);
+                    if (req.query.department) tutorFilters["tutor.department"] = regex(req.query.department);
+                    if (req.query.experience) tutorFilters["tutor.experience"] = regex(req.query.experience);
+                    if (req.query.runningYear) tutorFilters["tutor.runningYear"] = regex(req.query.runningYear);
+                    if (req.query.ssc) tutorFilters["tutor.ssc"] = regex(req.query.ssc);
+                    if (req.query.hsc) tutorFilters["tutor.hsc"] = regex(req.query.hsc);
+
+                    const applications = await applicationCollection.aggregate([
+                        { $match: { tuitionId: tuitionObjectId } },
+                        {
+                            $lookup: {
+                                from: "users",
+                                localField: "tutorId",
+                                foreignField: "_id",
+                                as: "tutor"
+                            }
+                        },
+                        { $unwind: "$tutor" },
+                        { $match: tutorFilters },
+                        {
+                            $project: {
+                                "tutor.email": 0,
+                                "tutor.contactEmail": 0
+                            }
+                        }
+                    ]).toArray();
+
+                    res.send(applications);
+                } catch (err) {
+                    console.error("Analytics error:", err);
+                    res.status(500).send({ message: "Failed to load tutor analytics" });
+                }
+            }
+        );
+
+
+
+
 
 
         // PUBLIC – APPROVED TUTORS LIST (PAGINATED + FILTER)
