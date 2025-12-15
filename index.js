@@ -122,6 +122,61 @@ async function run() {
             res.send({ role: user.role, status: user.status });
         });
 
+        // GET profile (logged-in user)
+        app.get("/profile", verifyFirebaseToken, async (req, res) => {
+            const user = await userCollection.findOne(
+                { email: req.decoded.email },
+                { projection: { password: 0 } }
+            );
+
+            if (!user) return res.status(404).send({ message: "User not found" });
+            res.send(user);
+        });
+
+        app.patch("/profile", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { name, email, phone, photoURL } = req.body;
+                const currentEmail = req.decoded.email;
+
+                const currentUser = await userCollection.findOne({ email: currentEmail });
+                if (!currentUser) {
+                    return res.status(404).send({ message: "User not found" });
+                }
+
+                // ✅ Email uniqueness check
+                if (email && email !== currentEmail) {
+                    const exists = await userCollection.findOne({ email });
+                    if (exists) {
+                        return res.status(409).send({ message: "Email already exists" });
+                    }
+                }
+
+                await userCollection.updateOne(
+                    { _id: currentUser._id },
+                    {
+                        $set: {
+                            name,
+                            email,
+                            phone,
+                            photoURL, // ✅ THIS WAS MISSING
+                            updatedAt: new Date(),
+                        },
+                    }
+                );
+
+                res.send({ success: true });
+
+            } catch (error) {
+                console.error("PROFILE UPDATE ERROR:", error);
+                res.status(500).send({ message: "Failed to update profile" });
+            }
+        });
+
+
+
+
+
+
         // =====================================================
         // ADMIN – USER MANAGEMENT (PAGINATED)
         // =====================================================
@@ -423,6 +478,41 @@ async function run() {
 
             res.send({ total, tutors });
         });
+
+
+        app.get("/tutors/details/:id", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid tutor ID" });
+                }
+
+                const tutor = await userCollection.findOne(
+                    {
+                        _id: new ObjectId(id),
+                        role: "tutor",
+                        status: "approved"
+                    },
+                    {
+                        projection: {
+                            password: 0
+                        }
+                    }
+                );
+
+                if (!tutor) {
+                    return res.status(404).send({ message: "Tutor not found" });
+                }
+
+                res.send({ tutor });
+
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
 
 
 
