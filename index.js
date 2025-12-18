@@ -173,10 +173,6 @@ async function run() {
         });
 
 
-
-
-
-
         // =====================================================
         // ADMIN – USER MANAGEMENT (PAGINATED)
         // =====================================================
@@ -219,34 +215,94 @@ async function run() {
         });
 
         app.get("/admin/tuitions/:id", verifyFirebaseToken, async (req, res) => {
-            const tuition = await tuitionCollection.findOne({ _id: new ObjectId(req.params.id) });
+            try {
+                const { id } = req.params;
 
-            const applications = await applicationCollection
-                .find({ tuitionId: tuition._id })
-                .toArray();
+                // 1️⃣ Get tuition by ObjectId
+                const tuition = await tuitionCollection.findOne({
+                    _id: new ObjectId(id),
+                });
 
-            res.send({ tuition, applications });
+                if (!tuition) {
+                    return res.status(404).send({ message: "Tuition not found" });
+                }
+
+                // 2️⃣ Get posted student info
+                const postedUser = await userCollection.findOne({
+                    email: tuition.postedByEmail,
+                });
+
+                // 3️⃣ 🔥 GET ALL APPLICATIONS FOR THIS TUITION
+                const applications = await applicationCollection
+                    .find({ tuitionObjectId: new ObjectId(id) })
+                    .toArray();
+
+                // 4️⃣ Return full response
+                res.send({
+                    tuition: {
+                        ...tuition,
+                        postedBy: postedUser
+                            ? {
+                                name: postedUser.name,
+                                email: postedUser.email,
+                                phone: postedUser.phone,
+                                photoURL: postedUser.photoURL,
+                            }
+                            : null,
+                    },
+                    applications,
+                });
+
+            } catch (error) {
+                console.error("Admin tuition details error:", error);
+                res.status(500).send({ message: "Failed to load tuition details" });
+            }
         });
 
 
-        // =====================================================
-        // TUITIONS (ONLY SMALL ADDITION)
-        // =====================================================
         app.post("/tuitions", verifyFirebaseToken, async (req, res) => {
-            const data = req.body;
+            try {
+                const data = req.body;
 
-            data.createdAt = new Date();
-            data.status = "pending";
+                // 🔐 Auth user email
+                const email = req.decoded.email;
 
-            data.postedByEmail = req.decoded.email;
-            data.postedByRole = "student";
+                // 🔎 Fetch user from DB
+                const user = await userCollection.findOne({ email });
 
-            const tuitionId = await getNextTuitionId(db);
-            data.tuitionId = tuitionId;
+                if (!user) {
+                    return res.status(404).send({ message: "User not found" });
+                }
 
-            const result = await tuitionCollection.insertOne(data);
-            res.send({ insertedId: result.insertedId, tuitionId });
+                // 🆔 Generate tuition ID
+                const tuitionId = await getNextTuitionId(db);
+
+                const tuitionData = {
+                    ...data,
+
+                    tuitionId,
+                    status: "pending",
+                    createdAt: new Date(),
+
+                    // ✅ SAFE USER INFO
+                    postedByEmail: email,
+                    postedByName: user.name,
+                    postedByRole: user.role || "student",
+                };
+
+                const result = await tuitionCollection.insertOne(tuitionData);
+
+                res.send({
+                    insertedId: result.insertedId,
+                    tuitionId,
+                });
+
+            } catch (error) {
+                console.error("Tuition post error:", error);
+                res.status(500).send({ message: "Failed to post tuition" });
+            }
         });
+
 
 
         app.get("/tuitions", async (req, res) => {
@@ -279,9 +335,11 @@ async function run() {
             res.send({ total, tuitions });
         });
 
+
         // =======================================
         // PUBLIC – TUITION DETAILS (by tuitionId)
         // =======================================
+
         app.get("/tuitions/:tuitionId", async (req, res) => {
             const { tuitionId } = req.params;
 
@@ -296,11 +354,161 @@ async function run() {
 
 
         // =====================================================
-        // STUDENT – MY TUITIONS
+        // TUTOR – MY APPLICATIONS
         // =====================================================
+        app.get("/tutor/my-applications", verifyFirebaseToken, async (req, res) => {
+            try {
+                const tutor = await userCollection.findOne({
+                    email: req.decoded.email,
+                    role: "tutor",
+                });
+
+                if (!tutor) {
+                    return res.status(403).send({ message: "Tutor only" });
+                }
+
+                const applications = await applicationCollection.aggregate([
+                    { $match: { tutorId: tutor._id } },
+                    {
+                        $lookup: {
+                            from: "tuitions",
+                            localField: "tuitionObjectId",
+                            foreignField: "_id",
+                            as: "tuition",
+                        },
+                    },
+                    { $unwind: "$tuition" },
+                    { $sort: { createdAt: -1 } },
+                ]).toArray();
+
+                res.send(applications);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to load applications" });
+            }
+        });
+
+
+
+        // =====================================================
+        // TUTOR – WITHDRAW APPLICATION (FIXED)
+        // =====================================================
+        app.delete("/tutor/applications/:id",
+            verifyFirebaseToken,
+            async (req, res) => {
+                try {
+                    const appId = req.params.id;
+
+                    const tutor = await userCollection.findOne({
+                        email: req.decoded.email,
+                        role: "tutor",
+                    });
+
+                    if (!tutor) {
+                        return res.status(403).send({ message: "Tutor only" });
+                    }
+
+                    const application = await applicationCollection.findOne({
+                        _id: new ObjectId(appId),
+                        tutorId: tutor._id,
+                        status: "pending",
+                    });
+
+                    if (!application) {
+                        return res
+                            .status(404)
+                            .send({ message: "Application not found or cannot withdraw" });
+                    }
+
+                    await applicationCollection.deleteOne({
+                        _id: new ObjectId(appId),
+                    });
+
+                    res.send({ withdrawn: true });
+
+                } catch (err) {
+                    console.error("Withdraw error:", err);
+                    res.status(500).send({ message: "Withdraw failed" });
+                }
+            }
+        );
+
+
+        app.patch("/applications/:id/accept", verifyFirebaseToken, async (req, res) => {
+            await applicationCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: { status: "accepted" } }
+            );
+            res.send({ accepted: true });
+        });
+
+
+
+        app.patch("/applications/:id/reject", verifyFirebaseToken, async (req, res) => {
+            await applicationCollection.updateOne(
+                { _id: new ObjectId(req.params.id) },
+                { $set: { status: "rejected" } }
+            );
+            res.send({ rejected: true });
+        });
+
+
+        // =====================================================
+        // TUTOR – EDIT APPLICATION
+        // =====================================================
+        app.patch(
+            "/tutor/applications/:id",
+            verifyFirebaseToken,
+            async (req, res) => {
+                try {
+                    const appId = req.params.id;
+                    const { experience, expectedSalary } = req.body;
+
+                    const tutor = await userCollection.findOne({
+                        email: req.decoded.email,
+                        role: "tutor",
+                    });
+
+                    if (!tutor) {
+                        return res.status(403).send({ message: "Tutor only" });
+                    }
+
+                    const application = await applicationCollection.findOne({
+                        _id: new ObjectId(appId),
+                        tutorId: tutor._id,
+                        status: "pending",
+                    });
+
+                    if (!application) {
+                        return res
+                            .status(404)
+                            .send({ message: "Application not found or locked" });
+                    }
+
+                    await applicationCollection.updateOne(
+                        { _id: new ObjectId(appId) },
+                        {
+                            $set: {
+                                "tutor.experience": experience,
+                                "tutor.expectedSalary": expectedSalary,
+                                updatedAt: new Date(),
+                            },
+                        }
+                    );
+
+                    res.send({ updated: true });
+                } catch (err) {
+                    console.error(err);
+                    res.status(500).send({ message: "Update failed" });
+                }
+            }
+        );
+
+
         // =====================================================
         // STUDENT – MY TUITIONS WITH APPLICATIONS
         // =====================================================
+
         app.get("/my-tuitions/:email", verifyFirebaseToken, async (req, res) => {
             const email = req.params.email;
 
@@ -354,91 +562,105 @@ async function run() {
 
 
 
-        // STUDENT – TUITION ANALYTICS
-        app.get("/student/tuition-analytics/:id", verifyFirebaseToken, async (req, res) => {
-            const tuitionId = new ObjectId(req.params.id);
-            const { university, department, experience, runningYear } = req.query;
+        app.post("/tuitions/:tuitionId/apply", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { tuitionId } = req.params;
+                const email = req.decoded.email;
 
-            let tutorFilters = {};
-            if (university) tutorFilters["tutor.university"] = { $regex: university, $options: "i" };
-            if (department) tutorFilters["tutor.department"] = { $regex: department, $options: "i" };
-            if (experience) tutorFilters["tutor.experience"] = { $gte: experience };
-            if (runningYear) tutorFilters["tutor.runningYear"] = runningYear;
+                const tutor = await userCollection.findOne({
+                    email,
+                    role: "tutor",
+                    status: "approved",
+                });
 
-            const tutors = await applicationCollection.aggregate([
-                { $match: { tuitionId } },
-                {
-                    $lookup: {
-                        from: "users",
-                        localField: "tutorId",
-                        foreignField: "_id",
-                        as: "tutor"
-                    }
-                },
-                { $unwind: "$tutor" },
-                { $match: tutorFilters },
-                {
-                    $project: {
-                        "tutor.email": 0,
-                        "tutor.contactEmail": 0
-                    }
+                if (!tutor) {
+                    return res.status(403).send({ message: "Only tutors can apply" });
                 }
-            ]).toArray();
 
-            res.send(tutors.map(t => t.tutor));
+                const tuition = await tuitionCollection.findOne({ tuitionId });
+                if (!tuition) {
+                    return res.status(404).send({ message: "Tuition not found" });
+                }
+
+                const exists = await applicationCollection.findOne({
+                    tuitionId,
+                    tutorId: tutor._id,
+                });
+
+                if (exists) {
+                    return res.send({ applied: false, message: "Already applied" });
+                }
+
+                // 🔥 SERIAL NUMBER
+                const count = await applicationCollection.countDocuments({ tuitionId });
+
+                const application = {
+                    tuitionId,
+                    tuitionObjectId: tuition._id,
+                    tutorId: tutor._id,
+                    serial: count + 1,
+
+                    tutor: {
+                        name: tutor.name,
+                        email: tutor.email,
+                        photoURL: tutor.photoURL,
+                        ssc: tutor.ssc,
+                        hsc: tutor.hsc,
+                        university: tutor.university,
+                        department: tutor.department,
+                        experience: req.body.experience,
+                        expectedSalary: req.body.expectedSalary,
+                    },
+
+                    status: "pending",
+                    createdAt: new Date(),
+                };
+
+                await applicationCollection.insertOne(application);
+
+                res.send({ applied: true });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Apply failed" });
+            }
         });
 
 
-        // GET tutors applied to a tuition (with filters)
-        app.get("/student/tuition/:id/applicants",
+        app.get("/tuitions/:id/applications",
             verifyFirebaseToken,
             async (req, res) => {
                 try {
                     const tuitionObjectId = new ObjectId(req.params.id);
 
-                    let tutorFilters = {
-                        "tutor.role": "tutor",
-                        "tutor.status": "approved"
-                    };
-
-                    const regex = v => ({ $regex: v, $options: "i" });
-
-                    if (req.query.university) tutorFilters["tutor.university"] = regex(req.query.university);
-                    if (req.query.department) tutorFilters["tutor.department"] = regex(req.query.department);
-                    if (req.query.experience) tutorFilters["tutor.experience"] = regex(req.query.experience);
-                    if (req.query.runningYear) tutorFilters["tutor.runningYear"] = regex(req.query.runningYear);
-                    if (req.query.ssc) tutorFilters["tutor.ssc"] = regex(req.query.ssc);
-                    if (req.query.hsc) tutorFilters["tutor.hsc"] = regex(req.query.hsc);
-
-                    const applications = await applicationCollection.aggregate([
-                        { $match: { tuitionId: tuitionObjectId } },
-                        {
-                            $lookup: {
-                                from: "users",
-                                localField: "tutorId",
-                                foreignField: "_id",
-                                as: "tutor"
-                            }
-                        },
-                        { $unwind: "$tutor" },
-                        { $match: tutorFilters },
-                        {
-                            $project: {
-                                "tutor.email": 0,
-                                "tutor.contactEmail": 0
-                            }
-                        }
-                    ]).toArray();
+                    const applications = await applicationCollection
+                        .find({ tuitionObjectId })
+                        .sort({ "tutor.serial": 1 })
+                        .toArray();
 
                     res.send(applications);
                 } catch (err) {
-                    console.error("Analytics error:", err);
-                    res.status(500).send({ message: "Failed to load tutor analytics" });
+                    console.error("Analytics load error:", err);
+                    res.status(500).send({ message: "Failed to load applications" });
                 }
             }
         );
 
 
+
+        app.get("/tuitions/:tuitionId/applications", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { tuitionId } = req.params;
+
+                const applications = await applicationCollection
+                    .find({ tuitionId })
+                    .sort({ serial: 1 })
+                    .toArray();
+
+                res.send(applications);
+            } catch (err) {
+                res.status(500).send({ message: "Failed to load applications" });
+            }
+        });
 
 
 
@@ -555,7 +777,15 @@ async function run() {
         // =====================================================
         // ALL OTHER ROUTES (UNCHANGED)
         // =====================================================
-        // Applications, Payments, Tutors, Details APIs
+        app.post("/payments/create-intent", verifyFirebaseToken, async (req, res) => {
+            const intent = await stripe.paymentIntents.create({
+                amount: 1000 * 100,
+                currency: "bdt",
+            });
+
+            res.send({ clientSecret: intent.client_secret });
+        });
+
 
     } catch (err) {
         console.log(err);
