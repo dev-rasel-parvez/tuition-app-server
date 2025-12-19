@@ -23,7 +23,8 @@ app.use(cors());
 app.use(express.json());
 
 const verifyFirebaseToken = async (req, res, next) => {
-    const authHeader = req.headersauthorization || req.headers.authorization;
+    const authHeader = req.headers.authorization;
+
     if (!authHeader) {
         return res.status(401).send({ message: "Unauthorized" });
     }
@@ -38,6 +39,7 @@ const verifyFirebaseToken = async (req, res, next) => {
         return res.status(401).send({ message: "Invalid token" });
     }
 };
+
 
 // SUPER ADMIN EMAIL
 const SUPER_ADMIN_EMAIL = "projects@resultdrivenads.com";
@@ -76,8 +78,9 @@ async function run() {
         const db = client.db("eTuitionBd");
         const userCollection = db.collection("users");
         const tuitionCollection = db.collection("tuitions");
-        const applicationCollection = db.collection("applications");
         const paymentCollection = db.collection("payments");
+        const applicationCollection = db.collection("applications");
+
 
         // =====================================================
         // BASIC TEST
@@ -603,6 +606,7 @@ async function run() {
                     tutor: {
                         name: tutor.name,
                         email: tutor.email,
+                        contactPhone: tutor.contactPhone || tutor.phone, // ✅ FIX
                         photoURL: tutor.photoURL,
                         ssc: tutor.ssc,
                         hsc: tutor.hsc,
@@ -615,6 +619,7 @@ async function run() {
                     status: "pending",
                     createdAt: new Date(),
                 };
+
 
                 await applicationCollection.insertOne(application);
 
@@ -775,7 +780,7 @@ async function run() {
         });
 
         // =====================================================
-        // ALL OTHER ROUTES (UNCHANGED)
+        // Payments
         // =====================================================
         app.post("/payments/create-intent", verifyFirebaseToken, async (req, res) => {
             const intent = await stripe.paymentIntents.create({
@@ -787,9 +792,25 @@ async function run() {
         });
 
 
-        // ============================
-        // STUDENT – FINALIZE PAYMENT
-        // ============================
+        // CREATE PAYMENT INTENT
+        app.post("/payments/create-intent",
+            verifyFirebaseToken,
+            async (req, res) => {
+                try {
+                    const intent = await stripe.paymentIntents.create({
+                        amount: 1000 * 100, // 1000 TK
+                        currency: "bdt",
+                    });
+
+                    res.send({ clientSecret: intent.client_secret });
+                } catch (err) {
+                    console.error("Create intent error:", err);
+                    res.status(500).send({ message: "Failed to create payment intent" });
+                }
+            }
+        );
+
+        // CONFIRM PAYMENT
         app.post("/payments/confirm",
             verifyFirebaseToken,
             async (req, res) => {
@@ -798,30 +819,33 @@ async function run() {
 
                     const application = await applicationCollection.findOne({
                         _id: new ObjectId(applicationId),
-                        status: "accepted",
                     });
 
                     if (!application) {
                         return res.status(404).send({ message: "Application not found" });
                     }
 
-                    // 1️⃣ APPROVE SELECTED TUTOR
+                    // APPROVE SELECTED TUTOR
                     await applicationCollection.updateOne(
                         { _id: application._id },
-                        { $set: { status: "approved", paidAt: new Date() } }
+                        {
+                            $set: {
+                                status: "approved",
+                                paidAt: new Date(),
+                            },
+                        }
                     );
 
-                    // 2️⃣ AUTO REJECT OTHERS
+                    // AUTO REJECT OTHERS
                     await applicationCollection.updateMany(
                         {
                             tuitionId: application.tuitionId,
                             _id: { $ne: application._id },
-                            status: "pending",
                         },
                         { $set: { status: "rejected" } }
                     );
 
-                    // 3️⃣ SAVE PAYMENT HISTORY
+                    // SAVE PAYMENT
                     await paymentCollection.insertOne({
                         applicationId: application._id,
                         tuitionId: application.tuitionId,
@@ -837,31 +861,71 @@ async function run() {
                     res.send({ success: true });
                 } catch (err) {
                     console.error("Payment confirm error:", err);
-                    res.status(500).send({ message: "Payment finalization failed" });
+                    res.status(500).send({ message: "Payment confirmation failed" });
                 }
             }
         );
 
-        app.get("/payments", verifyFirebaseToken, async (req, res) => {
-            const page = parseInt(req.query.page) || 1;
-            const limit = 10;
-            const skip = (page - 1) * limit;
+        // PAYMENT HISTORY
+        app.get("/payments",
+            verifyFirebaseToken,
+            async (req, res) => {
+                try {
+                    const page = parseInt(req.query.page) || 1;
+                    const limit = 10;
+                    const skip = (page - 1) * limit;
 
-            const total = await paymentCollection.countDocuments({
-                paidBy: req.decoded.email,
-            });
+                    const query = { paidBy: req.decoded.email };
 
-            const payments = await paymentCollection
-                .find({ paidBy: req.decoded.email })
-                .sort({ createdAt: -1 })
-                .skip(skip)
-                .limit(limit)
-                .toArray();
+                    const total = await paymentCollection.countDocuments(query);
 
-            res.send({ total, payments });
-        });
+                    const payments = await paymentCollection
+                        .find(query)
+                        .sort({ createdAt: -1 })
+                        .skip(skip)
+                        .limit(limit)
+                        .toArray();
 
-        
+                    res.send({ total, payments });
+                } catch (err) {
+                    console.error("Payment history error:", err);
+                    res.status(500).send({ message: "Failed to load payment history" });
+                }
+            }
+        );
+
+
+
+        // ============================
+        // ADMIN – ALL PAYMENTS REPORT
+        // ============================
+        app.get("/admin/payments",
+            verifyFirebaseToken,
+            async (req, res) => {
+                try {
+                    const adminUser = await userCollection.findOne({
+                        email: req.decoded.email,
+                        role: "admin",
+                    });
+
+                    if (!adminUser) {
+                        return res.status(403).send({ message: "Admin only" });
+                    }
+
+                    const payments = await paymentCollection
+                        .find()
+                        .sort({ createdAt: -1 })
+                        .toArray();
+
+                    res.send(payments);
+                } catch (err) {
+                    console.error("Admin payments error:", err);
+                    res.status(500).send({ message: "Failed to load reports" });
+                }
+            }
+        );
+
+
 
 
     } catch (err) {
