@@ -781,94 +781,86 @@ async function run() {
 
         // =====================================================
         // Payments
-        // =====================================================
-        app.post("/payments/create-intent", verifyFirebaseToken, async (req, res) => {
-            const intent = await stripe.paymentIntents.create({
-                amount: 1000 * 100,
-                currency: "bdt",
-            });
 
-            res.send({ clientSecret: intent.client_secret });
+        app.post("/payments/create-intent", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { amount } = req.body;
+
+                if (!amount || amount <= 0) {
+                    return res.status(400).send({ message: "Invalid amount" });
+                }
+
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount: amount * 100, // 🔥 Stripe uses cents
+                    currency: "bdt",
+                    payment_method_types: ["card"],
+                });
+
+                res.send({ clientSecret: paymentIntent.client_secret });
+            } catch (err) {
+                res.status(500).send({ message: "Failed to create payment intent" });
+            }
         });
 
 
-        // CREATE PAYMENT INTENT
-        app.post("/payments/create-intent",
-            verifyFirebaseToken,
-            async (req, res) => {
-                try {
-                    const intent = await stripe.paymentIntents.create({
-                        amount: 1000 * 100, // 1000 TK
-                        currency: "bdt",
-                    });
+        app.post("/payments/confirm", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { applicationId, paymentIntentId, amount } = req.body;
 
-                    res.send({ clientSecret: intent.client_secret });
-                } catch (err) {
-                    console.error("Create intent error:", err);
-                    res.status(500).send({ message: "Failed to create payment intent" });
+                // 1️⃣ Find application
+                const application = await applicationCollection.findOne({
+                    _id: new ObjectId(applicationId),
+                });
+
+                if (!application) {
+                    return res.status(404).send({ message: "Application not found" });
                 }
-            }
-        );
 
-        // CONFIRM PAYMENT
-        app.post("/payments/confirm",
-            verifyFirebaseToken,
-            async (req, res) => {
-                try {
-                    const { applicationId, paymentIntentId, amount } = req.body;
-
-                    const application = await applicationCollection.findOne({
-                        _id: new ObjectId(applicationId),
-                    });
-
-                    if (!application) {
-                        return res.status(404).send({ message: "Application not found" });
-                    }
-
-                    // APPROVE SELECTED TUTOR
-                    await applicationCollection.updateOne(
-                        { _id: application._id },
-                        {
-                            $set: {
-                                status: "approved",
-                                paidAt: new Date(),
-                            },
-                        }
-                    );
-
-                    // AUTO REJECT OTHERS
-                    await applicationCollection.updateMany(
-                        {
-                            tuitionId: application.tuitionId,
-                            _id: { $ne: application._id },
+                // 2️⃣ Approve selected application
+                await applicationCollection.updateOne(
+                    { _id: application._id },
+                    {
+                        $set: {
+                            status: "approved",
+                            paidAt: new Date(),
+                            paymentIntentId,
+                            amount,
                         },
-                        { $set: { status: "rejected" } }
-                    );
+                    }
+                );
 
-                    // SAVE PAYMENT
-                    await paymentCollection.insertOne({
-                        applicationId: application._id,
+                // 3️⃣ Reject other applications of same tuition
+                await applicationCollection.updateMany(
+                    {
                         tuitionId: application.tuitionId,
-                        tutorId: application.tutorId,
-                        tutorName: application.tutor.name,
-                        tutorEmail: application.tutor.email,
-                        amount,
-                        paymentIntentId,
-                        paidBy: req.decoded.email,
-                        createdAt: new Date(),
-                    });
+                        _id: { $ne: application._id },
+                    },
+                    { $set: { status: "rejected" } }
+                );
 
-                    res.send({ success: true });
-                } catch (err) {
-                    console.error("Payment confirm error:", err);
-                    res.status(500).send({ message: "Payment confirmation failed" });
-                }
+                // 🔥🔥🔥 4️⃣ INSERT INTO paymentCollection (THIS WAS MISSING)
+                await paymentCollection.insertOne({
+                    applicationId: application._id,
+                    tuitionId: application.tuitionId,
+                    tutorId: application.tutorId,
+                    tutorName: application.tutor.name,
+                    studentEmail: req.decoded.email,
+                    paidBy: req.decoded.email,
+                    amount,
+                    paymentIntentId,
+                    status: "succeeded",
+                    createdAt: new Date(),
+                });
+
+                res.send({ success: true });
+            } catch (err) {
+                console.error("Payment confirmation error:", err);
+                res.status(500).send({ message: "Payment confirmation failed" });
             }
-        );
+        });
 
         // PAYMENT HISTORY
-        app.get("/payments",
-            verifyFirebaseToken,
+        app.get("/payments", verifyFirebaseToken,
             async (req, res) => {
                 try {
                     const page = parseInt(req.query.page) || 1;
@@ -894,11 +886,7 @@ async function run() {
             }
         );
 
-
-
-        // ============================
         // ADMIN – ALL PAYMENTS REPORT
-        // ============================
         app.get("/admin/payments",
             verifyFirebaseToken,
             async (req, res) => {
