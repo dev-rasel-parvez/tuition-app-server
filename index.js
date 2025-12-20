@@ -5,6 +5,7 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const admin = require("firebase-admin");
+const port =  process.env.PORT || 3000;
 
 // ------------------------------
 // FIREBASE ADMIN INIT
@@ -924,7 +925,7 @@ run().catch(console.dir());
 // ------------------------------
 // START SERVER
 // ------------------------------
-const port = process.env.PORT || 3000;
+
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
 });
