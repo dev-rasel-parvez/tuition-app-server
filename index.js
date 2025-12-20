@@ -73,7 +73,7 @@ async function getNextTuitionId(db) {
 
 async function run() {
     try {
-        await client.connect();
+        
         console.log("Connected to MongoDB!");
 
         const db = client.db("eTuitionBd");
@@ -926,6 +926,6 @@ run().catch(console.dir());
 // START SERVER
 // ------------------------------
 
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
+run().catch(console.dir());
+module.exports = app;
+
