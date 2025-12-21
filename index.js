@@ -5,7 +5,8 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const admin = require("firebase-admin");
-const port =  process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
+
 
 // ------------------------------
 // FIREBASE ADMIN INIT
@@ -73,7 +74,7 @@ async function getNextTuitionId(db) {
 
 async function run() {
     try {
-        
+
         console.log("Connected to MongoDB!");
 
         const db = client.db("eTuitionBd");
@@ -308,31 +309,95 @@ async function run() {
             }
         });
 
-
+        // =======================================
+        // PUBLIC – TUITION DETAILS (by tuitionId)
+        // =======================================
 
         app.get("/tuitions", async (req, res) => {
             const limit = parseInt(req.query.limit) || 12;
             const page = parseInt(req.query.page) || 1;
             const skip = (page - 1) * limit;
 
-            let filters = {};
-            const regexField = field => ({ $regex: req.query[field], $options: "i" });
+            let filters = {
+                status: "approved",
+                assignedTutorId: { $exists: false },
+            };
 
-            if (req.query.class) filters.class = regexField("class");
-            if (req.query.subjects) filters.subjects = regexField("subjects");
-            if (req.query.university) filters.university = regexField("university");
-            if (req.query.uniSubject) filters.uniSubject = regexField("uniSubject");
-            if (req.query.location) filters.location = regexField("location");
-            if (req.query.schedule) filters.schedule = regexField("schedule");
+            // 🔍 SEARCH (SUBJECT OR LOCATION)
+            if (req.query.search) {
+                filters.$or = [
+                    { subjects: { $regex: req.query.search, $options: "i" } },
+                    { location: { $regex: req.query.search, $options: "i" } },
+                ];
+            }
 
-            // ❗ Tutors only see approved tuitions
-            filters.status = "approved";
+            // 🎓 CLASS
+            if (req.query.class) {
+                filters.class = { $regex: req.query.class, $options: "i" };
+            }
+
+            // 📘 SUBJECT (popup filter)
+            if (req.query.subjects) {
+                filters.subjects = { $regex: req.query.subjects, $options: "i" };
+            }
+
+            // 📍 LOCATION (popup filter)
+            if (req.query.location) {
+                filters.location = { $regex: req.query.location, $options: "i" };
+            }
+
+            // 🕒 SCHEDULE
+            if (req.query.schedule) {
+                filters.schedule = { $regex: req.query.schedule, $options: "i" };
+            }
+
+            // 🎓 UNIVERSITY
+            if (req.query.university) {
+                filters.university = { $regex: req.query.university, $options: "i" };
+            }
+
+            // 🏫 DEPARTMENT
+            if (req.query.uniSubject) {
+                filters.uniSubject = { $regex: req.query.uniSubject, $options: "i" };
+            }
+
+            // 💰 BUDGET RANGE (STRING → NUMBER SAFE)
+            if (req.query.budgetMin || req.query.budgetMax) {
+                filters.$expr = {
+                    $and: [
+                        req.query.budgetMin
+                            ? { $gte: [{ $toInt: "$budget" }, Number(req.query.budgetMin)] }
+                            : true,
+                        req.query.budgetMax
+                            ? { $lte: [{ $toInt: "$budget" }, Number(req.query.budgetMax)] }
+                            : true,
+                    ],
+                };
+            }
+
+
+            // 🔃 SORT
+            let sort = { createdAt: -1 };
+            switch (req.query.sort) {
+                case "budget_asc":
+                    sort = { budget: 1 };
+                    break;
+                case "budget_desc":
+                    sort = { budget: -1 };
+                    break;
+                case "date_asc":
+                    sort = { createdAt: 1 };
+                    break;
+                case "date_desc":
+                    sort = { createdAt: -1 };
+                    break;
+            }
 
             const total = await tuitionCollection.countDocuments(filters);
 
             const tuitions = await tuitionCollection
                 .find(filters)
-                .sort({ createdAt: -1 })
+                .sort(sort)
                 .skip(skip)
                 .limit(limit)
                 .toArray();
@@ -341,9 +406,6 @@ async function run() {
         });
 
 
-        // =======================================
-        // PUBLIC – TUITION DETAILS (by tuitionId)
-        // =======================================
 
         app.get("/tuitions/:tuitionId", async (req, res) => {
             const { tuitionId } = req.params;
@@ -802,6 +864,8 @@ async function run() {
         });
 
 
+        // PAYMENT HISTORY
+
         app.post("/payments/confirm", verifyFirebaseToken, async (req, res) => {
             try {
                 const { applicationId, paymentIntentId, amount } = req.body;
@@ -837,7 +901,19 @@ async function run() {
                     { $set: { status: "rejected" } }
                 );
 
-                // 🔥🔥🔥 4️⃣ INSERT INTO paymentCollection (THIS WAS MISSING)
+                // 🔥🔥🔥 4️⃣ MARK TUITION AS ASSIGNED (THIS WAS MISSING)
+                await tuitionCollection.updateOne(
+                    { tuitionId: application.tuitionId },
+                    {
+                        $set: {
+                            status: "assigned",
+                            assignedTutorId: application.tutorId,
+                            assignedAt: new Date(),
+                        },
+                    }
+                );
+
+                // 5️⃣ Save payment history
                 await paymentCollection.insertOne({
                     applicationId: application._id,
                     tuitionId: application.tuitionId,
@@ -858,7 +934,7 @@ async function run() {
             }
         });
 
-        // PAYMENT HISTORY
+
         app.get("/payments", verifyFirebaseToken,
             async (req, res) => {
                 try {
@@ -915,6 +991,12 @@ async function run() {
 
 
 
+
+        
+
+
+
+
     } catch (err) {
         console.log(err);
     }
@@ -929,3 +1011,6 @@ run().catch(console.dir());
 run().catch(console.dir());
 module.exports = app;
 
+app.listen(port, () => {
+    console.log(`My server is running on port ${port}`);
+})
