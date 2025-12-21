@@ -990,9 +990,69 @@ async function run() {
 
 
 
+        app.get("/payments/direct-hire/check",
+            verifyFirebaseToken,
+            async (req, res) => {
+
+                const exists = await paymentCollection.findOne({
+                    paidBy: req.decoded.email,
+                    paymentType: "direct_hire_tutor",
+                    status: "succeeded",
+                });
+
+                res.send({ unlocked: !!exists });
+            }
+        );
 
 
-        
+
+        app.post("/payments/direct-hire/create-intent", verifyFirebaseToken, async (req, res) => {
+            const { tutorId } = req.body;
+
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: 1000 * 100, // 1000 BDT
+                currency: "bdt",
+                payment_method_types: ["card"],
+                metadata: {
+                    tutorId,
+                    paidBy: req.decoded.email,
+                    paymentType: "direct_hire_tutor",
+                },
+            });
+
+            res.send({ clientSecret: paymentIntent.client_secret });
+        });
+
+
+
+        app.post("/payments/direct-hire/confirm", verifyFirebaseToken, async (req, res) => {
+            const { paymentIntentId, tutorId } = req.body;
+
+            const tutor = await userCollection.findOne({
+                _id: new ObjectId(tutorId),
+                role: "tutor",
+            });
+
+            if (!tutor) {
+                return res.status(404).send({ message: "Tutor not found" });
+            }
+
+            await paymentCollection.insertOne({
+                paidBy: req.decoded.email,
+                tutorId: tutor._id,
+                tutorEmail: tutor.email,
+                amount: 1000,
+                paymentType: "direct_hire_tutor",
+                paymentIntentId,
+                status: "succeeded",
+                createdAt: new Date(),
+            });
+
+            res.send({ success: true });
+        });
+
+
+
 
 
 
@@ -1011,6 +1071,6 @@ run().catch(console.dir());
 run().catch(console.dir());
 module.exports = app;
 
-app.listen(port, () => {
-    console.log(`My server is running on port ${port}`);
-})
+// app.listen(port, () => {
+//     console.log(`My server is running on port ${port}`);
+// })
